@@ -3184,6 +3184,40 @@ my $dtd      = $document-&gt;createInternalSubset( "foo", "-//FOO//DTD FOO 0.1//
 
 
             <varlistentry>
+                <term>setCargo</term>
+
+                <listitem>
+                    <funcsynopsis>
+                        <funcsynopsisinfo>$node-&gt;setCargo( $value );</funcsynopsisinfo>
+                    </funcsynopsis>
+
+                    <para>This function is not specified for any DOM level. It attaches a Perl value (a scalar or a reference) to the node, replacing the previous one; <literal>undef</literal> removes it.</para>
+
+                    <para>The value is attached to the node itself, not to the Perl object: every Perl object for the node sees it, and it is kept when no Perl variable refers to the node any more, as long as the node exists. It moves with the node when the node is moved, even to another document. It is released when the node is freed, for instance with its document, or when a DOM operation frees the node (e.g. <function>removeAttribute</function>, or <function>normalize</function> merging text nodes). Copies of the node made by <function>cloneNode</function> or <function>importNode</function> have no value attached.</para>
+
+                    <para>A value that refers to the node or to its document keeps the document alive, as any circular reference in Perl.</para>
+
+                    <para>This function cannot be used with <literal>:threads_shared</literal>.</para>
+                </listitem>
+            </varlistentry>
+
+
+
+            <varlistentry>
+                <term>getCargo</term>
+
+                <listitem>
+                    <funcsynopsis>
+                        <funcsynopsisinfo>$value = $node-&gt;getCargo;</funcsynopsisinfo>
+                    </funcsynopsis>
+
+                    <para>Returns the value attached to the node by <function>setCargo</function>, or <literal>undef</literal>.</para>
+                </listitem>
+            </varlistentry>
+
+
+
+            <varlistentry>
                 <term>nodeValue</term>
 
                 <listitem>

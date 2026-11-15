@@ -62,12 +62,14 @@ struct _ProxyNode {
     xmlNodePtr node;
     xmlNodePtr owner;
     int count;
+    SV * cargo; /* see setCargo(); must stay at the same place in _DocProxyNode */
 };
 
 struct _DocProxyNode {
     xmlNodePtr node;
     xmlNodePtr owner;
     int count;
+    SV * cargo;
     int encoding; /* only used for proxies of xmlDocPtr */
     int psvi_status; /* see below ... */
 };
@@ -146,6 +148,17 @@ typedef DocProxyNode* DocProxyNodePtr;
 #define PmmNODE(xnode)       xnode->node
 #define PmmOWNER(node)       node->owner
 #define PmmOWNERPO(node)     ((node && PmmOWNER(node)) ? (ProxyNodePtr)PmmOWNER(node)->_private : node)
+#define PmmCARGO(node)       node->cargo
+
+/* A proxy stays in node->_private when no Perl variable refers to the
+ * node any more, if a cargo is attached to it (see setCargo()). Such a
+ * proxy is dormant: it has no owner and no count, and holds only the
+ * cargo, until the node is wrapped again or freed. The memory
+ * management treats a node with a dormant proxy as a node without
+ * proxy.
+ */
+#define PmmIsDormant(proxy)  ((proxy) != NULL && PmmREFCNT((proxy)) <= 0 && PmmCARGO((proxy)) != NULL)
+#define PmmHasProxy(xnode)   ((xnode)->_private != NULL && !PmmIsDormant(((ProxyNodePtr)(xnode)->_private)))
 
 #define PmmENCODING(node)    ((DocProxyNodePtr)(node))->encoding
 #define PmmNodeEncoding(node) ((DocProxyNodePtr)(node->_private))->encoding
@@ -205,6 +218,9 @@ PmmCreateDocNode( unsigned int type, ProxyNodePtr pdoc, ...);
 
 int
 PmmREFCNT_dec( ProxyNodePtr node );
+
+void
+PmmReleaseCargo( xmlNodePtr node, int with_siblings );
 
 SV*
 PmmNodeToSv( xmlNodePtr node, ProxyNodePtr owner );

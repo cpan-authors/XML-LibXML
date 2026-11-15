@@ -1070,7 +1070,8 @@ LibXML_set_int_subset(xmlDocPtr doc, xmlNodePtr dtd) {
     if (old_dtd != NULL) {
         xmlUnlinkNode(old_dtd);
 
-        if (PmmPROXYNODE(old_dtd) == NULL) {
+        if (!PmmHasProxy(old_dtd)) {
+            PmmReleaseCargo(old_dtd, 0);
             xmlFreeDtd((xmlDtdPtr)old_dtd);
         }
     }
@@ -3789,7 +3790,7 @@ _setDocumentElement( self , proxy )
             }
 
             oelem = xmlDocGetRootElement( self );
-            if ( oelem == NULL || oelem->_private == NULL ) {
+            if ( oelem == NULL || !PmmHasProxy(oelem) ) {
                 xmlDocSetRootElement( self, elem );
             }
             else {
@@ -3881,7 +3882,8 @@ setExternalSubset( self, extdtd )
             }
 
             olddtd = self->extSubset;
-            if ( olddtd && olddtd->_private == NULL ) {
+            if ( olddtd && !PmmHasProxy((xmlNodePtr)olddtd) ) {
+                PmmReleaseCargo( (xmlNodePtr)olddtd, 0 );
                 xmlFreeDtd( olddtd );
             }
             self->extSubset = dtd;
@@ -3913,7 +3915,8 @@ setInternalSubset( self, extdtd )
             olddtd = xmlGetIntSubset( self );
             if( olddtd ) {
                 xmlReplaceNode( (xmlNodePtr)olddtd, (xmlNodePtr) dtd );
-                if ( olddtd->_private == NULL ) {
+                if ( !PmmHasProxy((xmlNodePtr)olddtd) ) {
+                    PmmReleaseCargo( (xmlNodePtr)olddtd, 0 );
                     xmlFreeDtd( olddtd );
                 }
             }
@@ -5035,7 +5038,8 @@ removeChildNodes( self )
             xmlUnlinkNode( elem );
             if (elem->type == XML_ATTRIBUTE_NODE
                 || elem->type == XML_DTD_NODE) {
-                if (PmmPROXYNODE(elem) == NULL) {
+                if (!PmmHasProxy(elem)) {
+                    PmmReleaseCargo(elem, 0);
                     xmlFreeNode(elem);
                 }
             }
@@ -5272,6 +5276,51 @@ unique_key( self )
     CODE:
         /* Cast pointer to IV */
         RETVAL = PTR2IV(self);
+    OUTPUT:
+        RETVAL
+
+void
+setCargo( self, cargo )
+        xmlNodePtr self
+        SV * cargo
+    PREINIT:
+        ProxyNodePtr proxy = NULL;
+        SV * old = NULL;
+    CODE:
+#ifdef XML_LIBXML_THREADS
+        /* proxies are shared by threads, Perl values are not */
+        if ( PmmUSEREGISTRY ) {
+            croak( "setCargo is not supported with :threads_shared" );
+        }
+#endif
+        proxy = PmmPROXYNODE(self);
+        if ( proxy == NULL ) {
+            croak( "lost node" );
+        }
+        old = PmmCARGO(proxy);
+        PmmCARGO(proxy) = SvOK(cargo) ? newSVsv(cargo) : NULL;
+        if ( old != NULL ) {
+            SvREFCNT_dec(old);
+        }
+
+SV *
+getCargo( self )
+        xmlNodePtr self
+    PREINIT:
+        ProxyNodePtr proxy = NULL;
+    CODE:
+#ifdef XML_LIBXML_THREADS
+        if ( PmmUSEREGISTRY ) {
+            croak( "getCargo is not supported with :threads_shared" );
+        }
+#endif
+        proxy = PmmPROXYNODE(self);
+        if ( proxy != NULL && PmmCARGO(proxy) != NULL ) {
+            RETVAL = newSVsv(PmmCARGO(proxy));
+        }
+        else {
+            RETVAL = &PL_sv_undef;
+        }
     OUTPUT:
         RETVAL
 
@@ -6146,6 +6195,13 @@ _setAttribute( self, attr_name, attr_value )
             croak( "bad name" );
         }
         value = nodeSv2C(attr_value, self );
+        {
+            /* the children of an existing attribute are freed */
+            xmlAttrPtr xattr = domGetAttrNode( self, name );
+            if ( xattr != NULL ) {
+                PmmReleaseCargo( xattr->children, 1 );
+            }
+        }
 #if LIBXML_VERSION >= 20621
 	/*
 	 * For libxml2-2.6.21 and later we can use just xmlSetProp
@@ -6191,10 +6247,11 @@ removeAttribute( self, attr_name )
 
             if ( xattr ) {
                 xmlUnlinkNode((xmlNodePtr)xattr);
-                if ( xattr->_private ) {
+                if ( PmmHasProxy((xmlNodePtr)xattr) ) {
                     PmmFixOwner((ProxyNodePtr)xattr->_private, NULL);
                 }
                 else {
+                    PmmReleaseCargo((xmlNodePtr)xattr, 0);
                     xmlFreeProp(xattr);
                 }
             }
@@ -6393,6 +6450,11 @@ _setAttributeNS( self, namespaceURI, attr_name, attr_value )
         }
         else {
             /* warn( "set attribute %s->%s", name, value ); */
+            /* the children of an existing attribute are freed */
+            xmlAttrPtr xattr = xmlHasNsProp( self, name, ns ? ns->href : NULL );
+            if ( xattr != NULL && xattr->type == XML_ATTRIBUTE_NODE ) {
+                PmmReleaseCargo( xattr->children, 1 );
+            }
             xmlSetNsProp( self, ns, name, value );
         }
 
@@ -6430,10 +6492,11 @@ removeAttributeNS( self, namespaceURI, attr_name )
         }
         if ( xattr && xattr->type == XML_ATTRIBUTE_NODE ) {
             xmlUnlinkNode((xmlNodePtr)xattr);
-            if ( xattr->_private ) {
+            if ( PmmHasProxy((xmlNodePtr)xattr) ) {
                 PmmFixOwner((ProxyNodePtr)xattr->_private, NULL);
             }
             else {
+                PmmReleaseCargo((xmlNodePtr)xattr, 0);
                 xmlFreeProp(xattr);
             }
         }
@@ -8247,7 +8310,7 @@ _findnodes( pxpath_context, perl_xpath )
                         } else {
                             /* we try to find a known node on the ancestor axis */
                             xmlNodePtr n = tnode;
-                            while (n && n->_private == NULL) n = n->parent;
+                            while (n && !PmmHasProxy(n)) n = n->parent;
                             if (n) owner = PmmOWNERPO(((ProxyNodePtr)n->_private));
                             else owner = NULL; /* self contained node */
                         }
@@ -8356,7 +8419,7 @@ _find( pxpath_context, pxpath, to_bool )
                                     } else {
                                         /* we try to find a known node on the ancestor axis */
                                         xmlNodePtr n = tnode;
-                                        while (n && n->_private == NULL) n = n->parent;
+                                        while (n && !PmmHasProxy(n)) n = n->parent;
                                         if (n) owner = PmmOWNERPO(((ProxyNodePtr)n->_private));
                                         else owner = NULL;  /* self contained node */
                                     }
