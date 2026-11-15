@@ -13,6 +13,8 @@ XML::LibXML::Node - Abstract Base Class of XML::LibXML Nodes
   $bool = $node->isSameNode( $other_node );
   $bool = $node->isEqual( $other_node );
   $num = $node->unique_key;
+  $node->setCargo( $value );
+  $value = $node->getCargo;
   $content = $node->nodeValue;
   $content = $node->textContent;
   $type = $node->nodeType;
@@ -131,6 +133,32 @@ other words, two node objects return the same key if and only if isSameNode
 indicates that they are the same node.
 
 The returned key value is useful as a key in hashes.
+
+
+=item setCargo
+
+  $node->setCargo( $value );
+
+This function is not specified for any DOM level. It attaches a Perl value (a
+scalar or a reference) to the node, replacing the previous one; C<<<<<< undef >>>>>> removes it.
+
+The value is attached to the node itself, not to the Perl object: every Perl
+object for the node sees it, and it is kept when no Perl variable refers to the
+node any more, as long as the node exists. It moves with the node when the node
+is moved, even to another document. It is released when the node is freed, for
+instance with its document, or when a DOM operation frees the node (e.g. C<<<<<< removeAttribute >>>>>>, or C<<<<<< normalize >>>>>> merging text nodes). Copies of the node made by C<<<<<< cloneNode >>>>>> or C<<<<<< importNode >>>>>> have no value attached.
+
+A value that refers to the node or to its document keeps the document alive, as
+any circular reference in Perl.
+
+This function cannot be used with C<<<<<< :threads_shared >>>>>>.
+
+
+=item getCargo
+
+  $value = $node->getCargo;
+
+Returns the value attached to the node by C<<<<<< setCargo >>>>>>, or C<<<<<< undef >>>>>>.
 
 
 =item nodeValue

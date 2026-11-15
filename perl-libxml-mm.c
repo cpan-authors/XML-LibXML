@@ -346,6 +346,7 @@ PmmNewNode(xmlNodePtr node)
             proxy->node  = node;
             proxy->owner   = NULL;
             proxy->count   = 0;
+            proxy->cargo   = NULL;
             node->_private = (void*) proxy;
         }
     }
@@ -381,6 +382,76 @@ PmmNewFragment(xmlDocPtr doc)
     return retval;
 }
 
+/* drops the dormant proxy of a node (see PmmIsDormant); its cargo is
+ * made mortal, so that it is released once the node is freed, and no
+ * Perl code runs while libxml2 frees the tree.
+ */
+static void
+PmmReleaseNodeCargo( pTHX_ xmlNodePtr node )
+{
+    ProxyNodePtr proxy = (ProxyNodePtr)node->_private;
+
+    if ( PmmIsDormant(proxy) ) {
+        sv_2mortal( PmmCARGO(proxy) );
+        PmmCARGO(proxy) = NULL;
+        node->_private = NULL;
+        xmlFree( proxy );
+    }
+}
+
+/* drops the dormant proxies of a subtree, without recursion */
+static void
+PmmReleaseCargoTree( pTHX_ xmlNodePtr top )
+{
+    xmlNodePtr node = top;
+    xmlNodePtr attr = NULL;
+    xmlNodePtr child = NULL;
+
+    while ( node != NULL ) {
+        PmmReleaseNodeCargo( aTHX_ node );
+
+        if ( node->type == XML_ELEMENT_NODE ) {
+            for ( attr = (xmlNodePtr)node->properties; attr != NULL; attr = attr->next ) {
+                PmmReleaseNodeCargo( aTHX_ attr );
+                for ( child = attr->children; child != NULL; child = child->next ) {
+                    PmmReleaseNodeCargo( aTHX_ child );
+                }
+            }
+        }
+
+        /* the children of an entity reference belong to the entity */
+        if ( node->children != NULL && node->type != XML_ENTITY_REF_NODE ) {
+            node = node->children;
+            continue;
+        }
+
+        while ( node != top && node->next == NULL ) {
+            node = node->parent;
+        }
+        node = ( node == top ) ? NULL : node->next;
+    }
+}
+
+/* drops the dormant proxies of a subtree that is about to be freed (or
+ * of a list of subtrees, if with_siblings is set)
+ */
+void
+PmmReleaseCargo( xmlNodePtr node, int with_siblings )
+{
+    dTHX;
+
+    while ( node != NULL ) {
+        PmmReleaseCargoTree( aTHX_ node );
+        if ( node->type == XML_DOCUMENT_NODE || node->type == XML_HTML_DOCUMENT_NODE ) {
+            xmlDtdPtr ext = ((xmlDocPtr)node)->extSubset;
+            if ( ext != NULL && ext != ((xmlDocPtr)node)->intSubset ) {
+                PmmReleaseCargoTree( aTHX_ (xmlNodePtr)ext );
+            }
+        }
+        node = with_siblings ? node->next : NULL;
+    }
+}
+
 /* frees the node if necessary. this method is aware that libxml2
  * has several different nodetypes.
  */
@@ -391,12 +462,14 @@ PmmFreeNode( xmlNodePtr node )
     case XML_DOCUMENT_NODE:
     case XML_HTML_DOCUMENT_NODE:
         xs_warn("PmmFreeNode: XML_DOCUMENT_NODE\n");
+        PmmReleaseCargo( node, 0 );
         xmlFreeDoc( (xmlDocPtr) node );
         break;
     case XML_ATTRIBUTE_NODE:
         xs_warn("PmmFreeNode: XML_ATTRIBUTE_NODE\n");
         if ( node->parent == NULL ) {
             xs_warn( "PmmFreeNode:   free node!\n");
+            PmmReleaseCargo( node, 0 );
             node->ns = NULL;
             xmlFreeProp( (xmlAttrPtr) node );
         }
@@ -406,11 +479,13 @@ PmmFreeNode( xmlNodePtr node )
             if ( node->doc->extSubset != (xmlDtdPtr)node
                  && node->doc->intSubset != (xmlDtdPtr)node ) {
                 xs_warn( "PmmFreeNode: XML_DTD_NODE\n");
+                PmmReleaseCargo( node, 0 );
                 node->doc = NULL;
                 xmlFreeDtd( (xmlDtdPtr)node );
             }
         } else {
             xs_warn( "PmmFreeNode: XML_DTD_NODE (no doc)\n");
+            PmmReleaseCargo( node, 0 );
             xmlFreeDtd( (xmlDtdPtr)node );
         }
         break;
@@ -418,6 +493,7 @@ PmmFreeNode( xmlNodePtr node )
         xs_warn("PmmFreeNode: XML_DOCUMENT_FRAG_NODE\n");
     default:
         xs_warn( "PmmFreeNode: normal node\n" );
+        PmmReleaseCargo( node, 0 );
         xmlFreeNode( node);
         break;
     }
@@ -433,6 +509,7 @@ PmmREFCNT_dec( ProxyNodePtr node )
 {
     xmlNodePtr libnode = NULL;
     ProxyNodePtr owner = NULL;
+    SV * cargo = NULL;
     int retval = 0;
 
     if ( node != NULL ) {
@@ -466,6 +543,19 @@ PmmREFCNT_dec( ProxyNodePtr node )
                     xs_warn( "PmmREFCNT_dec:     REAL DELETE\n" );
                     PmmFreeNode( libnode );
                 }
+                else if ( libnode != NULL && PmmCARGO(node) != NULL ) {
+                    /* the node stays in its tree: keep the proxy, dormant,
+                     * for the cargo. It may be freed with the tree when
+                     * the owner is released below, so it is not used
+                     * after that.
+                     */
+                    xs_warn( "PmmREFCNT_dec:     KEEP DORMANT PROXY FOR CARGO\n" );
+                    PmmREFCNT( node ) = 0;
+                    PmmNODE( node ) = libnode;
+                    libnode->_private = node;
+                    PmmREFCNT_dec( owner );
+                    return retval;
+                }
                 xs_warn( "PmmREFCNT_dec:   decrease owner\n" );
                 PmmREFCNT_dec( owner );
             }
@@ -477,7 +567,12 @@ PmmREFCNT_dec( ProxyNodePtr node )
 			else {
 				xs_warn( "PmmREFCNT_dec:   NO OWNER\n" );
 			}
+            cargo = PmmCARGO( node );
             xmlFree( node );
+            if ( cargo != NULL ) {
+                dTHX;
+                SvREFCNT_dec( cargo );
+            }
         }
     }
     else {
@@ -517,7 +612,16 @@ PmmNodeToSv( xmlNodePtr node, ProxyNodePtr owner )
         xs_warn("PmmNodeToSv: return new perl node of class:\n");
         xs_warn( CLASS );
 
-        if ( node->_private != NULL ) {
+        if ( node->_private != NULL && PmmIsDormant((ProxyNodePtr)node->_private) ) {
+            /* wake up a proxy kept for its cargo: as a new proxy, it
+             * gets the owner */
+            dfProxy = (ProxyNodePtr)node->_private;
+            if ( owner != NULL ) {
+                dfProxy->owner = PmmNODE( owner );
+                PmmREFCNT_inc( owner );
+            }
+        }
+        else if ( node->_private != NULL ) {
             dfProxy = PmmNewNode(node);
             /* fprintf(stderr, " at 0x%08.8X\n", dfProxy); */
         }
@@ -714,6 +818,17 @@ PmmFixOwner( ProxyNodePtr nodetofix, ProxyNodePtr parent )
 {
     ProxyNodePtr oldParent = NULL;
 
+    if ( PmmIsDormant(nodetofix) ) {
+        /* a proxy kept for its cargo has no owner: fix its subtree only */
+        if ( PmmNODE(nodetofix)->type != XML_ATTRIBUTE_NODE
+             && PmmNODE(nodetofix)->type != XML_DTD_NODE
+             && PmmNODE(nodetofix)->properties != NULL ) {
+            PmmFixOwnerList( (xmlNodePtr)PmmNODE(nodetofix)->properties, parent );
+        }
+        PmmFixOwnerList( PmmNODE(nodetofix)->children, parent );
+        return(1);
+    }
+
     if ( nodetofix != NULL ) {
         switch ( PmmNODE(nodetofix)->type ) {
         case XML_ENTITY_DECL:
@@ -792,7 +907,7 @@ PmmFixOwnerList( xmlNodePtr list, ProxyNodePtr parent )
                 break;
             }
 
-            if ( iterator->_private != NULL ) {
+            if ( PmmHasProxy(iterator) ) {
                 PmmFixOwner( (ProxyNodePtr)iterator->_private, parent );
             }
             else {
@@ -811,7 +926,7 @@ void
 PmmFixOwnerNode( xmlNodePtr node, ProxyNodePtr parent )
 {
     if ( node != NULL && parent != NULL ) {
-        if ( node->_private != NULL ) {
+        if ( PmmHasProxy(node) ) {
             xs_warn( "PmmFixOwnerNode: calling PmmFixOwner\n" );
             PmmFixOwner( node->_private, parent );
         }
@@ -832,6 +947,7 @@ PmmNewContext(xmlParserCtxtPtr node)
         proxy->node  = (xmlNodePtr)node;
         proxy->owner   = NULL;
         proxy->count   = 0;
+        proxy->cargo   = NULL;
     }
     else {
         warn( "empty context" );

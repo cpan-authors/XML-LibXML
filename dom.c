@@ -962,6 +962,7 @@ domSetNodeValue( xmlNodePtr n , xmlChar* val ){
       /* can't use xmlNodeSetContent - for Attrs it parses entities */
         if ( n->children != NULL ) {
             n->last = NULL;
+            PmmReleaseCargo( n->children, 1 );
             xmlFreeNodeList( n->children );
         }
         n->children = xmlNewText( val );
@@ -970,6 +971,10 @@ domSetNodeValue( xmlNodePtr n , xmlChar* val ){
         n->last = n->children;
     }
     else {
+        /* xmlNodeSetContent frees the children of these nodes */
+        if ( n->type == XML_ELEMENT_NODE || n->type == XML_DOCUMENT_FRAG_NODE ) {
+            PmmReleaseCargo( n->children, 1 );
+        }
         xmlNodeSetContent( n, val );
     }
 }
@@ -1174,8 +1179,10 @@ domNodeNormalize( xmlNodePtr node )
             /**
              * keep only nodes that are referred by perl (or GDOME)
              */
-            if ( !next->_private )
+            if ( !PmmHasProxy(next) ) {
+                PmmReleaseCargo( next, 0 );
                 xmlFreeNode( next );
+            }
         }
         break;
     case XML_ELEMENT_NODE:
